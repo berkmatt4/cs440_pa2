@@ -1,0 +1,3 @@
+src/labs/pokemon/agents/MinimaxAgent.java
+src/labs/pokemon/agents/AlphaBetaAgent.java
+src/labs/pokemon/debug/agents/MinimaxReflectionAgent.java

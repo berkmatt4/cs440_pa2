@@ -7,7 +7,10 @@ import edu.bu.pas.pokemon.core.Battle;
 import edu.bu.pas.pokemon.core.Battle.BattleView;
 import edu.bu.pas.pokemon.core.Team;
 import edu.bu.pas.pokemon.core.Team.TeamView;
+import edu.bu.pas.pokemon.core.enums.Flag;
+import edu.bu.pas.pokemon.core.enums.NonVolatileStatus;
 import edu.bu.pas.pokemon.core.enums.Stat;
+import edu.bu.pas.pokemon.core.enums.Type;
 import edu.bu.pas.pokemon.core.Move;
 import edu.bu.pas.pokemon.core.Move.MoveView;
 import edu.bu.pas.pokemon.core.Pokemon;
@@ -68,9 +71,12 @@ public class TreeTraversalAgent
             List<MoveView> moves = new ArrayList<>();
 
             MoveView move [] = active.getMoveViews();
-            for(int i = 0; i < move.length; i ++){
-                if (move[i].getPP() > 0) {
-                    moves.add(move[i]);
+            System.out.println("Move array: "+ move);
+            for (int i = 0; i < move.length; i++) {
+                if (move[i] != null && move[i].getPP() != null) { // Check for null first!
+                    if (move[i].getPP() > 0) {
+                        moves.add(move[i]);
+                    }
                 }
             }
             return moves;
@@ -89,27 +95,30 @@ public class TreeTraversalAgent
 
             double hpDiff = (myHp / myMaxHp) - (theirHp / theirMaxHp);
 
-            int myAtkStage = myActive.getStageMultiplier(Stat.ATK);
-            int theirDefStage = theirActive.getStageMultiplier(Stat.DEF);
+            int myAtkStage = myActive.getStatMultiplier(Stat.ATK);
+            int theirDefStage = theirActive.getStatMultiplier(Stat.DEF);
             double statModifier = (myAtkStage - theirDefStage) * 0.1;
 
             double statusAdv = 0.0;
-            if (theirActive.getStatus() == Status.POISON || theirActive.getStatus() == Status.BURN || theirActive.getStatus() == Status.TOXIC) {
+            if (theirActive.getNonVolatileStatus() == NonVolatileStatus.POISON || theirActive.getNonVolatileStatus() == NonVolatileStatus.BURN || theirActive.getNonVolatileStatus() == NonVolatileStatus.TOXIC) {
                 statusAdv += 0.2;
             }
-            if (myActive.getStatus() == Status.SLEEP || myActive.getStatus() == Status.FREEZE) {
+            if (myActive.getNonVolatileStatus() == NonVolatileStatus.SLEEP || myActive.getNonVolatileStatus() == NonVolatileStatus.FREEZE) {
                 statusAdv -= 0.2;
             }
 
-            int myRemaining = myTeam.getPokemonCount() - myTeam.getFaintedCount();
-            int theirRemaining = theirTeam.getPokemonCount() - theirTeam.getFaintedCount();
+            Team myTeamNotView = new Team(myTeam);
+            Team otherTeam = new Team(theirTeam);
+
+            int myRemaining = myTeamNotView.getNumAlivePokemon();
+            int theirRemaining = otherTeam.getNumAlivePokemon();
             double remainingDiff = (myRemaining - theirRemaining) * 0.5;
 
             return hpDiff + statModifier + statusAdv + remainingDiff;
         }
 
         private double calculateExpectedValue(BattleView state, int depth) {
-            if (depth >= maxDepth || state.isGameOver()) {
+            if (depth >= maxDepth || state.isOver()) {
                 return evaluateState(state);
             }
 
@@ -142,12 +151,12 @@ public class TreeTraversalAgent
                         } else {
                             Pokemon.PokemonView myPoke = getMyTeamView(state).getActivePokemonView();
                             Pokemon.PokemonView theirPoke = getOpponentTeamView(state).getActivePokemonView();
-                            int mySpeed = myPoke.getSpeed();
-                            if (myPoke.getStatus() == Status.PARALYZE) {
+                            int mySpeed = myPoke.getCurrentStat(Stat.SPD);
+                            if (myPoke.getNonVolatileStatus() == NonVolatileStatus.PARALYSIS) {
                                 mySpeed = (int) (mySpeed * 0.75);
                             }
-                            int theirSpeed = theirPoke.getSpeed();
-                            if (theirPoke.getStatus() == Status.PARALYZE) {
+                            int theirSpeed = theirPoke.getCurrentStat(Stat.SPD);
+                            if (theirPoke.getNonVolatileStatus() == NonVolatileStatus.PARALYSIS) {
                                 theirSpeed = (int) (theirSpeed * 0.75);
                             }
 
@@ -201,50 +210,56 @@ public class TreeTraversalAgent
             TeamView team = isAgent ? getMyTeamView(state) : getOpponentTeamView(state);
             Pokemon.PokemonView pokemon = team.getActivePokemonView();
             List<Pair<Double, BattleView>> outcomes = new ArrayList<>();
+            Battle stateNotView = new Battle(state);
 
-            if (pokemon.getStatus() == Status.SLEEP) {
-                BattleView awakeState = state.copy();
-                TeamView awakeTeam = isAgent ? getMyTeamView(awakeState) : getOpponentTeamView(awakeState);
-                awakeTeam.getActivePokemonView().setStatus(Status.NONE);
-                List<Pair<Double, BattleView>> moveOutcomes = move.getPotentialEffects(awakeState);
+            if (pokemon.getNonVolatileStatus() == NonVolatileStatus.SLEEP) {
+                Battle awakeStateNotView = stateNotView.copy();
+                BattleView awakeState = new BattleView(awakeStateNotView);
+
+                TeamView awakeTeamView = isAgent ? getMyTeamView(awakeState) : getOpponentTeamView(awakeState);
+                Team awakeTeam = new Team(awakeTeamView);
+                awakeTeam.getActivePokemon().setNonVolatileStatus(NonVolatileStatus.NONE);
+                List<Pair<Double, BattleView>> moveOutcomes = move.getPotentialEffects(awakeState, awakeTeam.getActivePokemonIdx(), getOpponentTeamView(state).getActivePokemonIdx());
                 for (Pair<Double, BattleView> outcome : moveOutcomes) {
                     outcomes.add(new Pair<>(0.098 * outcome.getFirst(), outcome.getSecond()));
                 }
                 outcomes.add(new Pair<>(0.902, state));
-            } else if (pokemon.getStatus() == Status.PARALYZE) {
+            } else if (pokemon.getNonVolatileStatus() == NonVolatileStatus.PARALYSIS) {
                 if (Math.random() < 0.25) {
                     outcomes.add(new Pair<>(1.0, state));
                 } else {
-                    outcomes.addAll(move.getPotentialEffects(state));
+                    outcomes.addAll(move.getPotentialEffects(state, getMyTeamView(state).getActivePokemonIdx(), getOpponentTeamView(state).getActivePokemonIdx()));
                 }
-            } else if (pokemon.isConfused()) {
-                Move selfDamageMove = new Move.Builder()
-                    .name("SelfDamage")
-                    .type(Type.NORMAL)
-                    .category(Move.Category.PHYSICAL)
-                    .basePower(40)
-                    .accuracy(null)
-                    .pp(Integer.MAX_VALUE)
-                    .criticalHitRatio(1)
-                    .priority(0)
-                    .build();
-                List<Pair<Double, BattleView>> selfOutcomes = selfDamageMove.getView().getPotentialEffects(state);
+            } else if (pokemon.getFlag(Flag.CONFUSED)) {
+                Move selfDamageMove = new Move(
+                    "SelfDamage", 
+                    Type.NORMAL, 
+                    Move.Category.PHYSICAL, 
+                    40,       // basePower (Integer)
+                    null,     // accuracy (Integer - null indicates it never misses)
+                    Integer.MAX_VALUE,  // pp (Integer)
+                    1,        // criticalHitRatio (int)
+                    0         // priority (int)
+                );
+                List<Pair<Double, BattleView>> selfOutcomes = selfDamageMove.getView().getPotentialEffects(state, getMyTeamView(state).getActivePokemonIdx(), getMyTeamView(state).getActivePokemonIdx());
                 for (Pair<Double, BattleView> outcome : selfOutcomes) {
                     outcomes.add(new Pair<>(0.5 * outcome.getFirst(), outcome.getSecond()));
                 }
-                List<Pair<Double, BattleView>> moveOutcomes = move.getPotentialEffects(state);
+                List<Pair<Double, BattleView>> moveOutcomes = move.getPotentialEffects(state, getMyTeamView(state).getActivePokemonIdx(), getOpponentTeamView(state).getActivePokemonIdx());
                 for (Pair<Double, BattleView> outcome : moveOutcomes) {
                     outcomes.add(new Pair<>(0.5 * outcome.getFirst(), outcome.getSecond()));
                 }
             } else {
-                outcomes.addAll(move.getPotentialEffects(state));
+                outcomes.addAll(move.getPotentialEffects(state, getMyTeamView(state).getActivePokemonIdx(), getOpponentTeamView(state).getActivePokemonIdx()));
             }
             return outcomes;
         }
 
         private BattleView applyPostTurnEffects(BattleView state) {
             // Simplified post-turn effects: apply poison/burn damage, decrement status counters
-            BattleView newState = state.copy();
+            Battle stateNotView = new Battle(state);
+            Battle newStateNotView = stateNotView.copy();
+            BattleView newState = new BattleView(newStateNotView);
             applyPostTurnEffectsForTeam(newState, true);
             applyPostTurnEffectsForTeam(newState, false);
             return newState;
@@ -252,26 +267,34 @@ public class TreeTraversalAgent
 
         private void applyPostTurnEffectsForTeam(BattleView state, boolean isAgent) {
             TeamView team = isAgent ? getMyTeamView(state) : getOpponentTeamView(state);
-            Pokemon.PokemonView pokemon = team.getActivePokemonView();
-            Status status = pokemon.getStatus();
+            Team teamNotView = new Team(team);
+            Pokemon.PokemonView pokemonView = team.getActivePokemonView();
+            Pokemon pokemon = teamNotView.getActivePokemon();
+            NonVolatileStatus status = pokemon.getNonVolatileStatus();
 
-            if (status == Status.POISON) {
-                int damage = (int) (pokemon.getMaxHP() / 8.0);
-                pokemon.setCurrentHP(pokemon.getCurrentHP() - damage);
-            } else if (status == Status.BURN) {
-                int damage = (int) (pokemon.getMaxHP() / 8.0);
-                pokemon.setCurrentHP(pokemon.getCurrentHP() - damage);
-            } else if (status == Status.TOXIC) {
-                int toxicCount = pokemon.getToxicCounter();
-                int damage = (int) (pokemon.getMaxHP() * (toxicCount / 16.0));
-                pokemon.setCurrentHP(pokemon.getCurrentHP() - damage);
-                pokemon.setToxicCounter(toxicCount + 1);
+            if (status == NonVolatileStatus.POISON) {
+                int damage = (int) (pokemon.getBaseStat(Stat.HP) / 8.0);
+                pokemon.setCurrentStat(Stat.HP, pokemon.getCurrentStat(Stat.HP) - damage);
+            } else if (status == NonVolatileStatus.BURN) {
+                int damage = (int) (pokemon.getBaseStat(Stat.HP) / 8.0);
+                pokemon.setCurrentStat(Stat.HP, pokemon.getCurrentStat(Stat.HP) - damage);
+            } else if (status == NonVolatileStatus.TOXIC) {
+                int toxicCount = pokemon.getNonVolatileStatusCounter(NonVolatileStatus.TOXIC);
+                pokemon.setNonVolatileStatusCounter(NonVolatileStatus.TOXIC, toxicCount + 1);
+                int damage = (int) (pokemon.getBaseStat(Stat.HP) * (toxicCount / 16.0));
+                pokemon.setCurrentStat(Stat.HP, pokemon.getCurrentStat(Stat.HP) - damage);
             }
 
-            if (pokemon.getStatus() == Status.SLEEP || pokemon.getStatus() == Status.FREEZE) {
-                int turns = pokemon.getStatusTurns();
+            if (pokemon.getNonVolatileStatus() == NonVolatileStatus.SLEEP){ //|| pokemon.getNonVolatileStatus() == NonVolatileStatus.FREEZE) {
+                int turns = pokemon.getNonVolatileStatusCounter(NonVolatileStatus.SLEEP);
                 if (turns > 0) {
-                    pokemon.setStatusTurns(turns - 1);
+                    pokemon.setNonVolatileStatusCounter(NonVolatileStatus.SLEEP, turns - 1);
+                }
+            }
+            if (pokemon.getNonVolatileStatus() == NonVolatileStatus.FREEZE){ //|| pokemon.getNonVolatileStatus() == NonVolatileStatus.FREEZE) {
+                int turns = pokemon.getNonVolatileStatusCounter(NonVolatileStatus.FREEZE);
+                if (turns > 0) {
+                    pokemon.setNonVolatileStatusCounter(NonVolatileStatus.FREEZE, turns - 1);
                 }
             }
         }
@@ -338,7 +361,8 @@ public class TreeTraversalAgent
         // team, and see which pokemon is your best choice by comparing the values of the root nodes.
 
         TeamView myTeam = getMyTeamView(view);
-        for (int i = 0; i < myTeam.getPokemonCount(); i++) {
+        Team team = new Team(myTeam);
+        for (int i = 0; i < team.getPokemon().size(); i++) {
             if (!myTeam.getPokemonView(i).hasFainted()) {
                 return i;
             }
