@@ -9,11 +9,16 @@ import edu.bu.pas.pokemon.core.Team;
 import edu.bu.pas.pokemon.core.Team.TeamView;
 import edu.bu.pas.pokemon.core.Move;
 import edu.bu.pas.pokemon.core.Move.MoveView;
+import edu.bu.pas.pokemon.core.Pokemon.PokemonView;
+import edu.bu.pas.pokemon.core.enums.Type;
+import edu.bu.pas.pokemon.core.enums.Stat;
 import edu.bu.pas.pokemon.utils.Pair;
-
+import src.pas.pokemon.agents.GameNode;
+import src.pas.pokemon.agents.UtilityCalculator;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -67,19 +72,50 @@ public class TreeTraversalAgent
 		 * @param node the node to perform the search on (i.e. the root of the entire tree)
 		 * @return The MoveView that your agent should execute
 		 */
-        public MoveView stochasticTreeSearch(BattleView rootView) //, int depth)
-        {
-            return null;
+
+         public MoveView stochasticTreeSearch(BattleView rootView) {
+            // Log initial state for debugging
+            System.out.println("Starting stochastic tree search");          
+            
+            try {
+                // Get our active Pokémon
+                PokemonView activePokemon = rootView.getTeamView(this.getMyTeamIdx()).getActivePokemonView();
+                
+                // Get available moves
+                List<MoveView> availableMoves = new ArrayList<>();
+                
+                // Try to get moves (may need to adjust method names)
+                try {
+                    MoveView[] moves = activePokemon.getMoveViews(); 
+                    for (int j = 0; j < moves.length; j++){
+                        availableMoves.add(moves[j]);
+                        System.out.println("Found move: " + moves[j].getName());
+                    }
+                } catch (Exception e) {
+                    System.out.println("Error getting moves: " + e.getMessage());
+                }
+                
+                if (availableMoves.isEmpty()) {
+                    System.out.println("No moves available!");
+                    return null;
+                }
+                
+                // For this minimal version, just return the first move
+                return availableMoves.get(3);
+                
+            } catch (Exception e) {
+                System.out.println("Exception in stochasticTreeSearch: " + e.getMessage());
+                e.printStackTrace();
+                return null;
+            }
         }
 
-        @Override
-        public Pair<MoveView, Long> call() throws Exception
-        {
-            double startTime = System.nanoTime();
 
+        @Override
+        public Pair<MoveView, Long> call() throws Exception {
+            double startTime = System.nanoTime();
             MoveView move = this.stochasticTreeSearch(this.getRootView());
             double endTime = System.nanoTime();
-
             return new Pair<MoveView, Long>(move, (long)((endTime-startTime)/1000000));
         }
 		
@@ -102,21 +138,16 @@ public class TreeTraversalAgent
     public long getMaxThinkingTimePerMoveInMS() { return this.maxThinkingTimePerMoveInMS; }
 
     @Override
-    public Integer chooseNextPokemon(BattleView view)
-    {
-        // TODO: replace me! This code calculates the first-available pokemon.
-        // It is likely a good idea to expand a bunch of trees with different choices as the active pokemon on your
-        // team, and see which pokemon is your best choice by comparing the values of the root nodes.
-
-        for(int idx = 0; idx < this.getMyTeamView(view).size(); ++idx)
-        {
-            if(!this.getMyTeamView(view).getPokemonView(idx).hasFainted())
-            {
+    public Integer chooseNextPokemon(BattleView view) {
+        // Simply choose the first non-fainted Pokémon
+        for (int idx = 0; idx < this.getMyTeamView(view).size(); ++idx) {
+            if (!this.getMyTeamView(view).getPokemonView(idx).hasFainted()) {
                 return idx;
             }
         }
-        return null;
+        return null; // No available Pokémon
     }
+
 
     /**
      * This method is responsible for getting a move selected via the minimax algorithm.
@@ -176,4 +207,24 @@ public class TreeTraversalAgent
 
         return move;
     }
+
+
+    // Utility method for debugging
+    private void printPokemonInfo(PokemonView pokemon) {
+        try {
+            System.out.println("Pokemon: " + pokemon.getName());
+            System.out.println("  HP: " + pokemon.getBaseStat(Stat.HP) + "/ __"); //does not print MAX HP only current
+            
+            System.out.println("  Moves:");
+            MoveView[] moves = pokemon.getMoveViews(); 
+            for (int j = 0; j < moves.length; j++){
+                System.out.println("    " + moves[j]); 
+            }
+
+        } catch (Exception e) {
+            System.out.println("Error printing Pokemon info: " + e.getMessage());
+        }
+    }
+
+
 }
