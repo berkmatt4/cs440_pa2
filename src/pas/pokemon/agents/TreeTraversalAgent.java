@@ -7,6 +7,10 @@ import edu.bu.pas.pokemon.core.Battle;
 import edu.bu.pas.pokemon.core.Battle.BattleView;
 import edu.bu.pas.pokemon.core.Team;
 import edu.bu.pas.pokemon.core.Team.TeamView;
+import edu.bu.pas.pokemon.core.enums.Flag;
+import edu.bu.pas.pokemon.core.enums.NonVolatileStatus;
+import edu.bu.pas.pokemon.core.enums.Stat;
+import edu.bu.pas.pokemon.core.enums.Type;
 import edu.bu.pas.pokemon.core.Move;
 import edu.bu.pas.pokemon.core.Move.MoveView;
 import edu.bu.pas.pokemon.core.Pokemon.PokemonView;
@@ -18,6 +22,7 @@ import src.pas.pokemon.agents.UtilityCalculator;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -63,6 +68,179 @@ public class TreeTraversalAgent
 		public BattleView getRootView() { return this.rootView; }
         public int getMaxDepth() { return this.maxDepth; }
         public int getMyTeamIdx() { return this.myTeamIdx; }
+
+        private List<MoveView> getPossibleMoves(BattleView state, boolean isAgent) {
+            TeamView team = isAgent ? getMyTeamView(state) : getOpponentTeamView(state);
+            Pokemon.PokemonView active = team.getActivePokemonView();
+
+            if (active.hasFainted() || active.getCurrentStat(Stat.HP) <= 0){
+                return new ArrayList<>();
+            }
+
+            List<MoveView> moves = new ArrayList<>();
+
+            MoveView move [] = active.getMoveViews();
+            System.out.println("Move array: "+ move);
+            for (int i = 0; i < move.length; i++) {
+                if (move[i] != null && move[i].getPP() != null) { // Check for null first!
+                    if (move[i].getPP() > 0 && !(move[i].getName().equals("SelfDamage"))) {
+                        moves.add(move[i]);
+                        System.out.println("Selected Move: "+ move[i].getName());
+                        System.out.println("Post-turn HP: "+ getMyTeamView(state).getActivePokemonView().getCurrentStat(Stat.HP));
+                    }
+                }
+            }
+            return moves;
+        }
+
+        private double evaluateState(BattleView state) {
+            TeamView myTeam = getMyTeamView(state);
+            TeamView theirTeam = getOpponentTeamView(state);
+            Pokemon.PokemonView myActive = myTeam.getActivePokemonView();
+            Pokemon.PokemonView theirActive = theirTeam.getActivePokemonView();
+
+            double myHp = myActive.getCurrentStat(Stat.HP);
+            double myMaxHp = myActive.getBaseStat(Stat.HP);
+            double theirHp = theirActive.getCurrentStat(Stat.HP);
+            double theirMaxHp = theirActive.getBaseStat(Stat.HP);
+
+            double hpDiff = (myHp / myMaxHp) - (theirHp / theirMaxHp);
+
+            int myAtkStage = myActive.getStatMultiplier(Stat.ATK);
+            int theirDefStage = theirActive.getStatMultiplier(Stat.DEF);
+            double statModifier = (myAtkStage - theirDefStage) * 0.1;
+
+            double statusAdv = 0.0;
+            if (theirActive.getNonVolatileStatus() == NonVolatileStatus.POISON || theirActive.getNonVolatileStatus() == NonVolatileStatus.BURN || theirActive.getNonVolatileStatus() == NonVolatileStatus.TOXIC) {
+                statusAdv += 0.2;
+            }
+            if (myActive.getNonVolatileStatus() == NonVolatileStatus.SLEEP || myActive.getNonVolatileStatus() == NonVolatileStatus.FREEZE) {
+                statusAdv -= 0.2;
+            }
+
+            Team myTeamNotView = new Team(myTeam);
+            Team otherTeam = new Team(theirTeam);
+
+            int myRemaining = myTeamNotView.getNumAlivePokemon();
+            int theirRemaining = otherTeam.getNumAlivePokemon();
+            double remainingDiff = (myRemaining - theirRemaining) * 0.5;
+
+            return hpDiff + statModifier + statusAdv + remainingDiff;
+        }
+
+        private double calculateExpectedValue(BattleView state, int depth) {
+            if (getMyTeamView(state).getActivePokemonView().hasFainted()) {
+                return -1000.0; // Penalize fainted state heavily
+            }
+
+            if (depth >= maxDepth || state.isOver() || getMyTeamView(state).getActivePokemonView().hasFainted()) {
+                return evaluateState(state);
+            }
+        
+            List<MoveView> myMoves = getPossibleMoves(state, true);
+            if (myMoves.isEmpty()) return Double.NEGATIVE_INFINITY;
+        
+            double maxValue = Double.NEGATIVE_INFINITY;
+            for (MoveView myMove : myMoves) {
+                double moveValue = 0.0;
+                List<Pair<Double, BattleView>> agentOutcomes = applyMove(state, myMove, true);
+                for (Pair<Double, BattleView> agentOutcome : agentOutcomes) {
+                    BattleView afterAgentMove = agentOutcome.getSecond();
+                    List<MoveView> opponentMoves = getPossibleMoves(afterAgentMove, false);
+                    if (opponentMoves.isEmpty()) {
+                        moveValue += agentOutcome.getFirst() * evaluateState(afterAgentMove);
+                        continue;
+                    }
+                    double opponentValue = 0.0;
+                    for (MoveView oppMove : opponentMoves) {
+                        List<Pair<Double, BattleView>> oppOutcomes = applyMove(afterAgentMove, oppMove, false);
+                        for (Pair<Double, BattleView> oppOutcome : oppOutcomes) {
+                            BattleView afterOppMove = oppOutcome.getSecond();
+                            BattleView postTurn = applyPostTurnEffects(afterOppMove);
+                            double value = calculateExpectedValue(postTurn, depth + 1);
+                            opponentValue += (1.0 / opponentMoves.size()) * oppOutcome.getFirst() * value;
+                        }
+                    }
+                    moveValue += agentOutcome.getFirst() * opponentValue;
+                }
+                if (moveValue > maxValue) {
+                    maxValue = moveValue;
+                }
+            }
+            return maxValue;
+        }
+
+        private List<Pair<Double, BattleView>> applyMove(BattleView state, MoveView move, boolean isAgent) {
+            // Clone the state before modification
+            Battle clonedState = new Battle(state); // Use existing Battle constructor to copy
+            BattleView clonedStateView = new BattleView(clonedState);
+        
+            TeamView team = isAgent ? getMyTeamView(clonedStateView) : getOpponentTeamView(clonedStateView);
+            Pokemon.PokemonView active = team.getActivePokemonView();
+        
+            List<Pair<Double, BattleView>> outcomes = new ArrayList<>();
+        
+            // Handle status effects on the CLONED state
+            if (active.getNonVolatileStatus() == NonVolatileStatus.SLEEP) {
+                // Modify the cloned state, not the original
+                Team clonedTeam = new Team(team);
+                clonedTeam.getActivePokemon().setNonVolatileStatus(NonVolatileStatus.NONE);
+                outcomes.addAll(move.getPotentialEffects(clonedStateView, clonedTeam.getActivePokemonIdx(), getOpponentTeamView(clonedStateView).getActivePokemonIdx()));
+            } else {
+                outcomes.addAll(move.getPotentialEffects(clonedStateView, team.getActivePokemonIdx(), getOpponentTeamView(clonedStateView).getActivePokemonIdx()));
+            }
+        
+            return outcomes;
+        }
+
+        private BattleView applyPostTurnEffects(BattleView state) {
+            
+            Battle clonedState = new Battle(state);
+            System.out.println("[DEBUG] Cloned turn (before): " + clonedState.getTurnNumber());
+            
+            applyPostTurnEffectsForTeam(clonedState, true);
+            applyPostTurnEffectsForTeam(clonedState, false);
+            
+            clonedState.nextTurn(); // Advance the turn
+            System.out.println("[DEBUG] Cloned turn (after): " + clonedState.getTurnNumber());
+            
+            return clonedState.getView();
+        }
+
+        private void applyPostTurnEffectsForTeam(Battle battle, boolean isAgent) {
+            BattleView state = new BattleView(battle);
+            TeamView teamView = isAgent ? getMyTeamView(state) : getOpponentTeamView(state);
+            Team team = new Team(teamView);
+            Pokemon activePokemon = team.getActivePokemon();
+        
+            NonVolatileStatus status = activePokemon.getNonVolatileStatus();
+        
+            // Apply status-based damage (POISON, BURN, TOXIC)
+            switch (status) {
+                case POISON:
+                    int poisonDamage = (int) (activePokemon.getBaseStat(Stat.HP) / 8);
+                    activePokemon.setCurrentStat(Stat.HP, activePokemon.getCurrentStat(Stat.HP) - poisonDamage);
+                    break;
+                case BURN:
+                    int burnDamage = (int) (activePokemon.getBaseStat(Stat.HP) / 8);
+                    activePokemon.setCurrentStat(Stat.HP, activePokemon.getCurrentStat(Stat.HP) - burnDamage);
+                    break;
+                case TOXIC:
+                    int toxicCounter = activePokemon.getNonVolatileStatusCounter(NonVolatileStatus.TOXIC);
+                    int toxicDamage = (int) (activePokemon.getBaseStat(Stat.HP) * (toxicCounter / 16.0));
+                    activePokemon.setCurrentStat(Stat.HP, activePokemon.getCurrentStat(Stat.HP) - toxicDamage);
+                    activePokemon.setNonVolatileStatusCounter(NonVolatileStatus.TOXIC, toxicCounter + 1);
+                    break;
+            }
+        
+            // Decrement status counters for SLEEP/FREEZE
+            if (status == NonVolatileStatus.SLEEP || status == NonVolatileStatus.FREEZE) {
+                int turns = activePokemon.getNonVolatileStatusCounter(status);
+                if (turns > 0) {
+                    activePokemon.setNonVolatileStatusCounter(status, turns - 1);
+                }
+            }
+        }
 
 		/**
 		 * TODO: implement me!
@@ -128,7 +306,7 @@ public class TreeTraversalAgent
     {
         super();
         this.maxThinkingTimePerMoveInMS = 180000 * 2; // 6 min/move
-        this.maxDepth = 1000; // set this however you want
+        this.maxDepth = 5; // set this however you want
     }
 
     /**
